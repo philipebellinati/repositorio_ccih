@@ -14,7 +14,8 @@ st.set_page_config(
 )
 
 # --- Variáveis de Configuração ---
-ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "ccih2025") # Usar secrets para produção
+# SENHA PADRÃO: ccih2025. Recomenda-se usar st.secrets para produção.
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "ccih2025") 
 PROCESSED_DATA_FILE = 'processed_data.csv'
 
 # --- Estilo CSS Customizado ---
@@ -32,7 +33,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- Funções de Processamento de Dados (Integradas do data_processor.py) ---
+# --- Funções de Processamento de Dados (Integradas) ---
 
 def extract_polymyxin_data(row):
     """Extrai a sensibilidade à Polimixina B da coluna 'Observações do isolado'."""
@@ -53,12 +54,11 @@ def process_data(df):
     # 2. Remoção de resultados negativos
     df = df[~df['Microrganismo'].str.contains('NEGATIVA|Negativa', na=False, case=False)].copy()
     
-    # 3. Limpeza do nome do microrganismo
+    # 3. Limpeza do nome do microrganismo (remove pontos finais e espaços)
     df['Microrganismo'] = df['Microrganismo'].str.replace('~', '', regex=False).str.strip()
     df['Microrganismo'] = df['Microrganismo'].str.replace(r'\.+$', '', regex=True).str.strip()
     
     # 4. Extração da Polimixina B das observações
-    # Identificamos isolados únicos (OS + Microrganismo) para extrair a Polimixina
     df_isolados_unicos = df.drop_duplicates(subset=['Código da O.S.', 'Microrganismo']).copy()
     df_isolados_unicos['Sensibilidade_Poli'] = df_isolados_unicos.apply(extract_polymyxin_data, axis=1)
     
@@ -67,7 +67,6 @@ def process_data(df):
     df_poli_rows['Sensibilidade'] = df_poli_rows['Sensibilidade_Poli']
     
     # 5. Combinar e Limpar Duplicatas
-    # Removemos qualquer Polimixina B que já exista na coluna Antimicrobiano original
     df = df[df['Antimicrobiano'] != 'Polimixina B']
     df_final = pd.concat([df, df_poli_rows], ignore_index=True)
     
@@ -75,7 +74,7 @@ def process_data(df):
     cols = ['Código da O.S.', 'Data da O.S.', 'Setor', 'Material', 'Microrganismo', 'Antimicrobiano', 'Sensibilidade']
     df_final = df_final[cols].dropna(subset=['Antimicrobiano', 'Sensibilidade'])
     
-    # LIMPEZA DE DUPLICATAS CRÍTICA:
+    # LIMPEZA DE DUPLICATAS CRÍTICA: Remove linhas onde OS, Microrganismo e ATB são idênticos
     df_final = df_final.drop_duplicates(subset=['Código da O.S.', 'Microrganismo', 'Antimicrobiano'])
     
     # Limpeza final de strings
@@ -99,13 +98,14 @@ def load_data(file_path):
     df['Mês'] = df['Data da O.S.'].dt.month
     return df
 
-# --- Funções de Visualização (Mantidas) ---
+# --- Funções de Visualização ---
 
 def create_prevalence_chart(df_filtered):
     """Cria o gráfico de barras dos microrganismos mais prevalentes."""
     df_isolados = df_filtered.drop_duplicates(subset=['Código da O.S.', 'Microrganismo'])
     prevalence = df_isolados['Microrganismo'].value_counts().reset_index()
     prevalence.columns = ['Microrganismo', 'Contagem']
+    
     top_15 = prevalence.head(15)
     top_15['Microrganismo_Italico'] = '<i>' + top_15['Microrganismo'] + '</i>'
 
@@ -156,12 +156,14 @@ def create_material_distribution_chart(df_filtered):
 def create_antibiogram_heatmap(df_filtered):
     """Cria o mapa de calor de sensibilidade aos antibióticos."""
     
+    # 1. Identificar os microrganismos mais prevalentes (Top 15)
     df_isolados = df_filtered.drop_duplicates(subset=['Código da O.S.', 'Microrganismo'])
     top_15_micros = df_isolados['Microrganismo'].value_counts().head(15).index.tolist()
     
     if not top_15_micros:
         return go.Figure().update_layout(title="Sem dados para exibição")
 
+    # 2. Calcular sensibilidade
     heatmap_data = []
     for micro in top_15_micros:
         df_micro = df_filtered[df_filtered['Microrganismo'] == micro]
@@ -171,7 +173,12 @@ def create_antibiogram_heatmap(df_filtered):
             stats['Sensível'] = 0
             
         total = stats.sum(axis=1)
+        # Filtra antibióticos com menos de 10 testes para evitar distorção
+        valid_tests = total[total >= 10]
+        
         perc = (stats['Sensível'] / total) * 100
+        perc = perc[valid_tests.index] # Aplica o filtro
+        
         res = perc.reset_index()
         res.columns = ['Antimicrobiano', '% Sensível']
         res['Microrganismo'] = micro
@@ -185,6 +192,7 @@ def create_antibiogram_heatmap(df_filtered):
     pivot_table = pivot_table.reindex(top_15_micros)
     pivot_table.index = ['<i>' + m + '</i>' for m in pivot_table.index]
     
+    # 3. Escala de cores CCIH
     colorscale = [
         [0.0, '#d73027'], [0.2, '#f46d43'], [0.4, '#fee08b'], 
         [0.6, '#d9ef8b'], [0.8, '#1a9850'], [1.0, '#1a9850']
@@ -312,7 +320,7 @@ def admin_page():
             st.experimental_rerun()
 
         except Exception as e:
-            st.error(f"Ocorreu um erro durante o processamento: {e}")
+            st.error(f"Ocorreu um erro durante o processamento. Verifique se o arquivo está no formato esperado (colunas: 'Código da O.S.', 'Resultado', 'Antimicrobiano', 'Classificação', 'Observações do isolado', etc.).")
             st.exception(e)
 
 # --- Lógica de Autenticação e Navegação ---
