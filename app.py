@@ -317,7 +317,7 @@ def admin_page():
             # 4. Limpar o cache e recarregar o dashboard
             st.cache_data.clear()
             st.info("O dashboard será recarregado automaticamente com os novos dados.")
-            st.experimental_rerun()
+            st.rerun()
 
         except Exception as e:
             st.error(f"Ocorreu um erro durante o processamento. Verifique se o arquivo está no formato esperado (colunas: 'Código da O.S.', 'Resultado', 'Antimicrobiano', 'Classificação', 'Observações do isolado', etc.).")
@@ -337,15 +337,15 @@ def main():
     if st.session_state.page == 'dashboard':
         if st.sidebar.button("Ir para Admin"):
             st.session_state.page = 'login'
-            st.experimental_rerun()
+            st.rerun()
     elif st.session_state.page == 'admin':
         if st.sidebar.button("Voltar para Dashboard"):
             st.session_state.page = 'dashboard'
-            st.experimental_rerun()
+            st.rerun()
         if st.sidebar.button("Logout"):
             st.session_state.logged_in = False
             st.session_state.page = 'login'
-            st.experimental_rerun()
+            st.rerun()
 
     # Lógica de Roteamento
     if st.session_state.page == 'dashboard':
@@ -360,7 +360,7 @@ def main():
             if password == ADMIN_PASSWORD:
                 st.session_state.logged_in = True
                 st.session_state.page = 'admin'
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Senha incorreta.")
     
@@ -369,7 +369,7 @@ def main():
             admin_page()
         else:
             st.session_state.page = 'login'
-            st.experimental_rerun()
+            st.rerun()
 
 if __name__ == "__main__":
     main()
