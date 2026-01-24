@@ -46,6 +46,7 @@ def load_data(file_path):
 def create_prevalence_chart(df_filtered):
     """Cria o gráfico de barras dos microrganismos mais prevalentes."""
     # Contagem de microrganismos únicos por Código da O.S. (isolados)
+    # A remoção de duplicatas já foi feita no data_processor, mas garantimos a contagem de isolados únicos aqui
     df_isolados = df_filtered.drop_duplicates(subset=['Código da O.S.', 'Microrganismo'])
     
     prevalence = df_isolados['Microrganismo'].value_counts().reset_index()
@@ -203,8 +204,6 @@ def main():
     if sel_micro != 'Todos': df_f = df_f[df_f['Microrganismo'] == sel_micro]
 
     # Filtro de Antibiótico (Polimixina B estará aqui)
-    # Usamos o multiselect para permitir a seleção de ATBs específicos para filtrar o dataset,
-    # mas o mapa de calor sempre mostrará todos os ATBs dos top 15 microrganismos.
     all_atbs = sorted(df_f['Antimicrobiano'].unique().tolist())
     sel_atb = st.sidebar.multiselect("Filtrar por Antibiótico (Apenas para Tabela de Dados)", all_atbs)
     
