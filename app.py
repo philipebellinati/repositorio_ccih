@@ -3,6 +3,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
+import re
+import os
 
 # --- Configurações da Página ---
 st.set_page_config(
@@ -10,6 +12,10 @@ st.set_page_config(
     page_title="Dashboard de Sensibilidade Antimicrobiana - CCIH",
     initial_sidebar_state="expanded"
 )
+
+# --- Variáveis de Configuração ---
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "ccih2025") # Usar secrets para produção
+PROCESSED_DATA_FILE = 'processed_data.csv'
 
 # --- Estilo CSS Customizado ---
 st.markdown("""
@@ -23,35 +29,83 @@ st.markdown("""
         border-radius: 10px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    div[data-testid="stExpander"] {
-        border: none;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- Funções de Carregamento e Processamento de Dados ---
+# --- Funções de Processamento de Dados (Integradas do data_processor.py) ---
+
+def extract_polymyxin_data(row):
+    """Extrai a sensibilidade à Polimixina B da coluna 'Observações do isolado'."""
+    obs = str(row['Observações do isolado'])
+    if 'Polimixina B' in obs:
+        if 'Sensível' in obs:
+            return 'Sensível'
+        elif 'Resistente' in obs:
+            return 'Resistente'
+    return None
+
+def process_data(df):
+    """Processa, limpa duplicatas e integra Polimixina B."""
+    
+    # 1. Padronização de colunas
+    df = df.rename(columns={'Resultado': 'Microrganismo', 'Unidade de coleta': 'Setor', 'Classificação': 'Sensibilidade'})
+    
+    # 2. Remoção de resultados negativos
+    df = df[~df['Microrganismo'].str.contains('NEGATIVA|Negativa', na=False, case=False)].copy()
+    
+    # 3. Limpeza do nome do microrganismo
+    df['Microrganismo'] = df['Microrganismo'].str.replace('~', '', regex=False).str.strip()
+    df['Microrganismo'] = df['Microrganismo'].str.replace(r'\.+$', '', regex=True).str.strip()
+    
+    # 4. Extração da Polimixina B das observações
+    # Identificamos isolados únicos (OS + Microrganismo) para extrair a Polimixina
+    df_isolados_unicos = df.drop_duplicates(subset=['Código da O.S.', 'Microrganismo']).copy()
+    df_isolados_unicos['Sensibilidade_Poli'] = df_isolados_unicos.apply(extract_polymyxin_data, axis=1)
+    
+    df_poli_rows = df_isolados_unicos.dropna(subset=['Sensibilidade_Poli']).copy()
+    df_poli_rows['Antimicrobiano'] = 'Polimixina B'
+    df_poli_rows['Sensibilidade'] = df_poli_rows['Sensibilidade_Poli']
+    
+    # 5. Combinar e Limpar Duplicatas
+    # Removemos qualquer Polimixina B que já exista na coluna Antimicrobiano original
+    df = df[df['Antimicrobiano'] != 'Polimixina B']
+    df_final = pd.concat([df, df_poli_rows], ignore_index=True)
+    
+    # Seleção de colunas essenciais
+    cols = ['Código da O.S.', 'Data da O.S.', 'Setor', 'Material', 'Microrganismo', 'Antimicrobiano', 'Sensibilidade']
+    df_final = df_final[cols].dropna(subset=['Antimicrobiano', 'Sensibilidade'])
+    
+    # LIMPEZA DE DUPLICATAS CRÍTICA:
+    df_final = df_final.drop_duplicates(subset=['Código da O.S.', 'Microrganismo', 'Antimicrobiano'])
+    
+    # Limpeza final de strings
+    df_final['Antimicrobiano'] = df_final['Antimicrobiano'].str.strip()
+    df_final['Sensibilidade'] = df_final['Sensibilidade'].str.strip()
+
+    return df_final
+
+# --- Funções de Carregamento e Cache ---
 
 @st.cache_data
 def load_data(file_path):
     """Carrega os dados processados."""
+    if not os.path.exists(file_path):
+        st.error(f"Arquivo de dados processados '{file_path}' não encontrado. Por favor, use a aba 'Administrador' para fazer o upload da planilha original.")
+        return pd.DataFrame()
+        
     df = pd.read_csv(file_path)
     df['Data da O.S.'] = pd.to_datetime(df['Data da O.S.'])
     df['Ano'] = df['Data da O.S.'].dt.year
     df['Mês'] = df['Data da O.S.'].dt.month
     return df
 
-# --- Funções de Visualização ---
+# --- Funções de Visualização (Mantidas) ---
 
 def create_prevalence_chart(df_filtered):
     """Cria o gráfico de barras dos microrganismos mais prevalentes."""
-    # Contagem de microrganismos únicos por Código da O.S. (isolados)
-    # A remoção de duplicatas já foi feita no data_processor, mas garantimos a contagem de isolados únicos aqui
     df_isolados = df_filtered.drop_duplicates(subset=['Código da O.S.', 'Microrganismo'])
-    
     prevalence = df_isolados['Microrganismo'].value_counts().reset_index()
     prevalence.columns = ['Microrganismo', 'Contagem']
-    
     top_15 = prevalence.head(15)
     top_15['Microrganismo_Italico'] = '<i>' + top_15['Microrganismo'] + '</i>'
 
@@ -102,21 +156,17 @@ def create_material_distribution_chart(df_filtered):
 def create_antibiogram_heatmap(df_filtered):
     """Cria o mapa de calor de sensibilidade aos antibióticos."""
     
-    # 1. Identificar os microrganismos mais prevalentes (Top 15)
     df_isolados = df_filtered.drop_duplicates(subset=['Código da O.S.', 'Microrganismo'])
     top_15_micros = df_isolados['Microrganismo'].value_counts().head(15).index.tolist()
     
     if not top_15_micros:
         return go.Figure().update_layout(title="Sem dados para exibição")
 
-    # 2. Calcular sensibilidade
     heatmap_data = []
     for micro in top_15_micros:
         df_micro = df_filtered[df_filtered['Microrganismo'] == micro]
-        # Agrupar por Antimicrobiano e Sensibilidade
         stats = df_micro.groupby(['Antimicrobiano', 'Sensibilidade']).size().unstack(fill_value=0)
         
-        # Garantir que a coluna 'Sensível' exista, mesmo que com zeros
         if 'Sensível' not in stats.columns:
             stats['Sensível'] = 0
             
@@ -135,14 +185,9 @@ def create_antibiogram_heatmap(df_filtered):
     pivot_table = pivot_table.reindex(top_15_micros)
     pivot_table.index = ['<i>' + m + '</i>' for m in pivot_table.index]
     
-    # 3. Escala de cores CCIH
     colorscale = [
-        [0.0, '#d73027'],   # <20% (Vermelho)
-        [0.2, '#f46d43'],   # 20-39% (Laranja)
-        [0.4, '#fee08b'],   # 40-59% (Amarelo)
-        [0.6, '#d9ef8b'],   # 60-79% (Verde Claro)
-        [0.8, '#1a9850'],   # >=80% (Verde Escuro)
-        [1.0, '#1a9850']
+        [0.0, '#d73027'], [0.2, '#f46d43'], [0.4, '#fee08b'], 
+        [0.6, '#d9ef8b'], [0.8, '#1a9850'], [1.0, '#1a9850']
     ]
     
     fig = go.Figure(data=go.Heatmap(
@@ -166,11 +211,10 @@ def create_antibiogram_heatmap(df_filtered):
     )
     return fig
 
-# --- Aplicação Principal ---
+# --- Páginas do Dashboard ---
 
-def main():
-    df = load_data('processed_data.csv')
-    
+def main_dashboard(df):
+    """Página principal do dashboard."""
     st.title("📊 Dashboard de Sensibilidade Antimicrobiana")
     st.markdown("Controle de Infecção Hospitalar - **CCIH Hospital Cancer**")
 
@@ -203,7 +247,7 @@ def main():
     sel_micro = st.sidebar.selectbox("Microrganismo", ['Todos'] + sorted(df_f['Microrganismo'].unique().tolist()))
     if sel_micro != 'Todos': df_f = df_f[df_f['Microrganismo'] == sel_micro]
 
-    # Filtro de Antibiótico (Polimixina B estará aqui)
+    # Filtro de Antibiótico (Apenas para Tabela de Dados)
     all_atbs = sorted(df_f['Antimicrobiano'].unique().tolist())
     sel_atb = st.sidebar.multiselect("Filtrar por Antibiótico (Apenas para Tabela de Dados)", all_atbs)
     
@@ -238,6 +282,86 @@ def main():
     # Tabela de dados detalhada (opcional)
     with st.expander("Ver Dados Detalhados (Filtrados)"):
         st.dataframe(df_f_atb)
+
+def admin_page():
+    """Página de administração para upload de dados."""
+    st.title("🔒 Área Administrativa - Upload de Dados")
+    st.warning("Atenção: O upload de um novo arquivo substituirá os dados atuais do dashboard.")
+
+    uploaded_file = st.file_uploader("Selecione o arquivo Excel original (HCL2025.xlsx)", type=['xlsx'])
+
+    if uploaded_file is not None:
+        try:
+            # 1. Carregar o arquivo
+            df_original = pd.read_excel(uploaded_file)
+            st.success("Arquivo carregado com sucesso!")
+            
+            # 2. Processar os dados
+            with st.spinner("Processando e limpando os dados..."):
+                df_processed = process_data(df_original)
+            
+            # 3. Salvar o novo arquivo processado
+            df_processed.to_csv(PROCESSED_DATA_FILE, index=False)
+            
+            st.success(f"Processamento concluído! {len(df_processed)} registros únicos salvos.")
+            st.balloons()
+            
+            # 4. Limpar o cache e recarregar o dashboard
+            st.cache_data.clear()
+            st.info("O dashboard será recarregado automaticamente com os novos dados.")
+            st.experimental_rerun()
+
+        except Exception as e:
+            st.error(f"Ocorreu um erro durante o processamento: {e}")
+            st.exception(e)
+
+# --- Lógica de Autenticação e Navegação ---
+
+def main():
+    # Inicializa o estado de navegação
+    if 'page' not in st.session_state:
+        st.session_state.page = 'dashboard'
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+
+    # Navegação na Sidebar
+    st.sidebar.markdown("---")
+    if st.session_state.page == 'dashboard':
+        if st.sidebar.button("Ir para Admin"):
+            st.session_state.page = 'login'
+            st.experimental_rerun()
+    elif st.session_state.page == 'admin':
+        if st.sidebar.button("Voltar para Dashboard"):
+            st.session_state.page = 'dashboard'
+            st.experimental_rerun()
+        if st.sidebar.button("Logout"):
+            st.session_state.logged_in = False
+            st.session_state.page = 'login'
+            st.experimental_rerun()
+
+    # Lógica de Roteamento
+    if st.session_state.page == 'dashboard':
+        df = load_data(PROCESSED_DATA_FILE)
+        if not df.empty:
+            main_dashboard(df)
+    
+    elif st.session_state.page == 'login':
+        st.title("Login Administrativo")
+        password = st.text_input("Senha", type="password")
+        if st.button("Entrar"):
+            if password == ADMIN_PASSWORD:
+                st.session_state.logged_in = True
+                st.session_state.page = 'admin'
+                st.experimental_rerun()
+            else:
+                st.error("Senha incorreta.")
+    
+    elif st.session_state.page == 'admin':
+        if st.session_state.logged_in:
+            admin_page()
+        else:
+            st.session_state.page = 'login'
+            st.experimental_rerun()
 
 if __name__ == "__main__":
     main()
