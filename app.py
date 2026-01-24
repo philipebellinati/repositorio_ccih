@@ -114,13 +114,17 @@ def create_antibiogram_heatmap(df_filtered):
         df_micro = df_filtered[df_filtered['Microrganismo'] == micro]
         # Agrupar por Antimicrobiano e Sensibilidade
         stats = df_micro.groupby(['Antimicrobiano', 'Sensibilidade']).size().unstack(fill_value=0)
-        if 'Sensível' in stats.columns:
-            total = stats.sum(axis=1)
-            perc = (stats['Sensível'] / total) * 100
-            res = perc.reset_index()
-            res.columns = ['Antimicrobiano', '% Sensível']
-            res['Microrganismo'] = micro
-            heatmap_data.append(res)
+        
+        # Garantir que a coluna 'Sensível' exista, mesmo que com zeros
+        if 'Sensível' not in stats.columns:
+            stats['Sensível'] = 0
+            
+        total = stats.sum(axis=1)
+        perc = (stats['Sensível'] / total) * 100
+        res = perc.reset_index()
+        res.columns = ['Antimicrobiano', '% Sensível']
+        res['Microrganismo'] = micro
+        heatmap_data.append(res)
             
     if not heatmap_data:
         return go.Figure().update_layout(title="Sem dados de sensibilidade")
@@ -146,7 +150,7 @@ def create_antibiogram_heatmap(df_filtered):
         y=pivot_table.index,
         colorscale=colorscale,
         zmin=0, zmax=100,
-        text=pivot_table.apply(lambda x: [f'{v:.0f}%' if not pd.isna(v) else '' for v in x], axis=1).values,
+        text=pivot_table.apply(lambda x: [f'{v:.0f}%' if not pd.isna(v) else 'N/A' for v in x], axis=1).values,
         texttemplate="%{text}",
         hoverongaps=False
     ))
@@ -199,8 +203,13 @@ def main():
     if sel_micro != 'Todos': df_f = df_f[df_f['Microrganismo'] == sel_micro]
 
     # Filtro de Antibiótico (Polimixina B estará aqui)
-    sel_atb = st.sidebar.multiselect("Antibióticos Específicos", sorted(df_f['Antimicrobiano'].unique().tolist()))
-    if sel_atb: df_f = df_f[df_f['Antimicrobiano'].isin(sel_atb)]
+    # Usamos o multiselect para permitir a seleção de ATBs específicos para filtrar o dataset,
+    # mas o mapa de calor sempre mostrará todos os ATBs dos top 15 microrganismos.
+    all_atbs = sorted(df_f['Antimicrobiano'].unique().tolist())
+    sel_atb = st.sidebar.multiselect("Filtrar por Antibiótico (Apenas para Tabela de Dados)", all_atbs)
+    
+    df_f_atb = df_f.copy()
+    if sel_atb: df_f_atb = df_f_atb[df_f_atb['Antimicrobiano'].isin(sel_atb)]
 
     # --- Layout ---
     total_isolados = df_f.drop_duplicates(subset=['Código da O.S.', 'Microrganismo'])['Código da O.S.'].nunique()
@@ -213,6 +222,7 @@ def main():
     with c2: st.plotly_chart(create_material_distribution_chart(df_f), use_container_width=True)
 
     st.markdown("---")
+    st.header("Mapa de Calor - Perfil de Sensibilidade")
     st.plotly_chart(create_antibiogram_heatmap(df_f), use_container_width=True)
 
     # Legenda
@@ -225,6 +235,10 @@ def main():
         <span><b style="color:#d73027;">■</b> <20%</span>
     </div>
     """, unsafe_allow_html=True)
+    
+    # Tabela de dados detalhada (opcional)
+    with st.expander("Ver Dados Detalhados (Filtrados)"):
+        st.dataframe(df_f_atb)
 
 if __name__ == "__main__":
     main()
